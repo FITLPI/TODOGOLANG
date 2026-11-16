@@ -8,14 +8,14 @@ import (
 )
 
 type Task struct {
-	ID            int
-	Version       int
-	Title         string
-	Description   *string
-	Completed     bool
-	CreatedAt     time.Time
-	CompletedAt   *time.Time
-	AuthorUserID  int
+	ID           int
+	Version      int
+	Title        string
+	Description  *string
+	Completed    bool
+	CreatedAt    time.Time
+	CompletedAt  *time.Time
+	AuthorUserID int
 }
 
 func NewTask(
@@ -29,14 +29,14 @@ func NewTask(
 	authorUserID int,
 ) Task {
 	return Task{
-		ID:            id,
-		Version:       version,
-		Title:         title,
-		Description:   description,
-		Completed:     completed,
-		CreatedAt:     createdAt,
-		CompletedAt:   completedAt,
-		AuthorUserID:  authorUserID,
+		ID:           id,
+		Version:      version,
+		Title:        title,
+		Description:  description,
+		Completed:    completed,
+		CreatedAt:    createdAt,
+		CompletedAt:  completedAt,
+		AuthorUserID: authorUserID,
 	}
 }
 
@@ -128,5 +128,75 @@ func (t *Task) UpdateDescription(description *string) error {
 	}
 	t.Description = description
 	t.Version++
+	return nil
+}
+
+type TaskPatch struct {
+	Title       Nullable[string]
+	Description Nullable[string]
+	Completed   Nullable[bool]
+	// CompletedAt намеренно отсутствует: инвариант completed/completed_at
+	// поддерживает домен, клиент не должен рассогласовать его вручную.
+}
+
+// Validate проверяет сам патч: обязательные поля нельзя выставлять в null.
+func (p TaskPatch) Validate() error {
+	if p.Title.Set && p.Title.Value == nil {
+		return fmt.Errorf("title cannot be null: %w", core_errors.ErrInvalidArgument)
+	}
+
+	if p.Title.Value != nil {
+		titleLength := len([]rune(*p.Title.Value))
+		if titleLength < 1 || titleLength > 100 {
+			return fmt.Errorf("invalid title length: %d: %w", titleLength, core_errors.ErrInvalidArgument)
+		}
+	}
+
+	if p.Description.Value != nil {
+		descLength := len([]rune(*p.Description.Value))
+		if descLength < 1 || descLength > 1000 {
+			return fmt.Errorf("invalid description length: %d: %w", descLength, core_errors.ErrInvalidArgument)
+		}
+	}
+
+	return nil
+}
+
+// ApplyPatch — «всё или ничего»: изменения применяются к копии, копия
+// валидируется, при успехе заменяется оригинал. При completed=true
+// completed_at выставляется в текущее время, при false — очищается.
+// Version здесь НЕ инкрементируется: инкремент делает SQL в UpdateTask
+// (version = version + 1), иначе условие WHERE version=$N не совпадёт.
+func (t *Task) ApplyPatch(p TaskPatch) error {
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("validate task patch: %w", err)
+	}
+
+	tmp := *t
+
+	if p.Title.Set {
+		tmp.Title = *p.Title.Value
+	}
+
+	if p.Description.Set {
+		tmp.Description = p.Description.Value
+	}
+
+	if p.Completed.Set {
+		tmp.Completed = *p.Completed.Value
+		if tmp.Completed {
+			now := time.Now()
+			tmp.CompletedAt = &now
+		} else {
+			tmp.CompletedAt = nil
+		}
+	}
+
+	if err := tmp.Validate(); err != nil {
+		return fmt.Errorf("validate patched task: %w", err)
+	}
+
+	*t = tmp
+
 	return nil
 }
